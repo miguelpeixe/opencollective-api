@@ -5,6 +5,7 @@ import models from '../../models';
 import * as constants from '../../constants/transactions';
 import roles from '../../constants/roles';
 import * as stripeGateway from './gateway';
+import * as paymentsLib from '../../lib/payments';
 import { planId } from '../../lib/utils';
 import errors from '../../lib/errors';
 
@@ -157,6 +158,28 @@ export default {
       .tap(() => paymentMethod.update({ confirmedAt: new Date }))
 
       .then(() => transactions); // make sure we return the transactions created
+  },
+
+  refundTransaction: async (transaction) => {
+    /* What's going to be refunded */
+    const chargeId = _.result(transaction.data, 'charge.id');
+
+    /* From which stripe account it's going to be refunded */
+    const collective = await models.Collective.findById(
+      transaction.type === 'CREDIT'
+        ? transaction.CollectiveId
+        : transaction.FromCollectiveId);
+    const hostStripeAccount = await collective.getHostStripeAccount();
+
+    /* Refund both charge & application fee */
+    const refund = await stripeGateway.refundCharge(hostStripeAccount, chargeId);
+    const balance = await stripeGateway.retrieveBalanceTransaction(
+      hostStripeAccount, refund.balance_transaction);
+    const fees = stripeGateway.extractFees(balance);
+
+    /* Create negative transactions for the received transaction */
+    await paymentsLib.createRefundTransaction(
+      transaction, fees.stripeFee, { refund, balance });
   },
 
   webhook: (requestBody, event) => {
