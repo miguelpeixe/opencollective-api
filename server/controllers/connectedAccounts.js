@@ -1,29 +1,15 @@
-import config from 'config';
-import request from 'request-promise';
 import Promise from 'bluebird';
-import models from '../models';
+import { get } from 'lodash';
+import config from 'config';
+
+import models, { Op } from '../models';
 import errors from '../lib/errors';
 import paymentProviders from '../paymentProviders';
-import { get } from 'lodash';
+import * as github from '../lib/github';
 
-const {
-  ConnectedAccount,
-  User
-} = models;
+const { ConnectedAccount, User } = models;
 
-export const list = (req, res, next) => {
-  const slug = req.params.slug.toLowerCase();
-
-  models.Collective.findBySlug(slug)
-    .then(collective => {
-      return models.ConnectedAccount.findAll({
-        where: { CollectiveId: collective.id }
-      });
-    })
-    .map(connectedAccount => connectedAccount.info)
-    .tap(connectedAccounts => res.json({connectedAccounts}))
-    .catch(next);
-};
+const GITHUB_REPO_MIN_STAR = 100;
 
 export const createOrUpdate = (req, res, next, accessToken, data, emails) => {
   const { utm_source, redirect } = req.query;
@@ -31,22 +17,29 @@ export const createOrUpdate = (req, res, next, accessToken, data, emails) => {
   const attrs = { service };
 
   switch (service) {
-
     case 'github': {
       let fetchUserPromise, caId, user, userCollective;
       const profile = data.profile._json;
-      const image = `https://images.githubusercontent.com/${data.profile.username}`;
+      const image = `https://avatars.githubusercontent.com/${data.profile.username}`;
+
       // TODO should simplify using findOrCreate but need to upgrade Sequelize to have this fix:
       // https://github.com/sequelize/sequelize/issues/4631
       if (req.remoteUser) {
         fetchUserPromise = Promise.resolve(req.remoteUser);
       } else {
-        fetchUserPromise = User.findOne({ where: { email: { $in: emails.map(email => email.toLowerCase()) } } })
-        .then(u => u || User.createUserWithCollective({
-          name: profile.name || profile.login,
-          image,
-          email: emails[0],
-        }))
+        fetchUserPromise = User.findOne({
+          where: {
+            email: { [Op.in]: emails.map(email => email.toLowerCase()) },
+          },
+        }).then(
+          u =>
+            u ||
+            User.createUserWithCollective({
+              name: profile.name || profile.login,
+              image,
+              email: emails[0],
+            }),
+        );
       }
       return fetchUserPromise
         .then(u => {
@@ -55,7 +48,7 @@ export const createOrUpdate = (req, res, next, accessToken, data, emails) => {
           attrs.clientId = profile.id;
           attrs.data = profile;
           attrs.CreatedByUserId = user.id;
-          return models.Collective.findById(user.CollectiveId);
+          return models.Collective.findByPk(user.CollectiveId);
         })
         .then(c => {
           userCollective = c;
@@ -63,55 +56,75 @@ export const createOrUpdate = (req, res, next, accessToken, data, emails) => {
           userCollective.locationName = userCollective.locationName || profile.location;
           userCollective.website = userCollective.website || profile.blog || profile.html_url;
           userCollective.image = userCollective.image || image;
+          userCollective.githubHandle = data.profile.username;
           userCollective.save();
         })
-        .then(() => ConnectedAccount.findOne({ where: { service, CollectiveId: user.CollectiveId} }))
+        .then(() =>
+          ConnectedAccount.findOne({
+            where: { service, CollectiveId: user.CollectiveId },
+          }),
+        )
         .then(ca => ca || ConnectedAccount.create(attrs))
         .then(ca => {
           caId = ca.id;
-          return ca.update({ username: data.profile.username, token: accessToken });
+          return ca.update({
+            username: data.profile.username,
+            token: accessToken,
+          });
         })
         .then(() => {
           const token = user.generateConnectedAccountVerifiedToken(caId, data.profile.username);
-          res.redirect(redirect || `${config.host.website}/github/apply/${token}?utm_source=${utm_source}`);
+          const newLocation = redirect
+            ? `${redirect}?token=${token}`
+            : `${config.host.website}/github/apply/${token}?utm_source=${utm_source}`;
+
+          res.redirect(newLocation);
         })
         .catch(next);
     }
 
     case 'meetup':
       return createConnectedAccountForCollective(req.query.CollectiveId, service)
-        .then(ca => ca.update({
-          clientId: accessToken,
-          token: data.tokenSecret,
-          CreatedByUserId: req.remoteUser.id
-        }))
-        .then(() => res.redirect(redirect || `${config.host.website}/${req.query.slug}/edit#connectedAccounts`))
+        .then(ca =>
+          ca.update({
+            clientId: accessToken,
+            token: data.tokenSecret,
+            CreatedByUserId: req.remoteUser.id,
+          }),
+        )
+        .then(() => res.redirect(redirect || `${config.host.website}/${req.query.slug}/edit/connected-accounts`))
         .catch(next);
 
     case 'twitter': {
       let collective;
       const profile = data.profile._json;
 
-      return models.Collective.findById(req.query.CollectiveId)
+      return models.Collective.findByPk(req.query.CollectiveId)
         .then(c => {
-          collective = c; 
-          collective.image = collective.image || profile.profile_image_url_https ? profile.profile_image_url_https.replace(/_normal/, '') : null;
+          collective = c;
+          collective.image =
+            collective.image ||
+            (profile.profile_image_url_https ? profile.profile_image_url_https.replace(/_normal/, '') : null);
           collective.description = collective.description || profile.description;
-          collective.backgroundImage = collective.backgroundImage || profile.profile_banner_url ? `${profile.profile_banner_url}/1500x500` : null;
+          collective.backgroundImage =
+            collective.backgroundImage ||
+            (profile.profile_banner_url ? `${profile.profile_banner_url}/1500x500` : null);
           collective.website = collective.website || profile.url;
           collective.locationName = collective.locationName || profile.location;
           collective.twitterHandle = profile.screen_name;
           collective.save();
         })
         .then(() => createConnectedAccountForCollective(req.query.CollectiveId, service))
-        .then(ca => ca.update({
-          username: data.profile.username,
-          clientId: accessToken,
-          token: data.tokenSecret,
-          data: data.profile._json,
-          CreatedByUserId: req.remoteUser.id
-        }))
-        .then(() => res.redirect(redirect || `${config.host.website}/${collective.slug}/edit#connectedAccounts`))
+        .then(ca =>
+          ca.update({
+            username: data.profile.username,
+            clientId: accessToken,
+            token: data.tokenSecret,
+            data: data.profile._json,
+            CreatedByUserId: req.remoteUser.id,
+          }),
+        )
+        .then(() => res.redirect(redirect || `${config.host.website}/${collective.slug}/edit/connected-accounts`))
         .catch(next);
     }
 
@@ -130,44 +143,67 @@ export const verify = (req, res, next) => {
 
   if (!payload) return next(new errors.Unauthorized());
   if (payload.scope === 'connected-account' && payload.username) {
-    res.send({service, username: payload.username, connectedAccountId: payload.connectedAccountId})
+    res.send({
+      service,
+      username: payload.username,
+      connectedAccountId: payload.connectedAccountId,
+    });
   } else {
     return next(new errors.BadRequest('Github authorization failed'));
   }
 };
 
-export const fetchAllRepositories = (req, res, next) => {
+const getGithubAccount = async req => {
   const payload = req.jwtPayload;
-  ConnectedAccount
-  .findOne({where: {id: payload.connectedAccountId}})
-  .then(ca => {
+  const githubAccount = await models.ConnectedAccount.findOne({
+    where: { id: payload.connectedAccountId },
+  });
+  if (!githubAccount) {
+    throw new errors.BadRequest('No connected GitHub Account');
+  }
+  return githubAccount;
+};
 
-    return Promise.map([1,2,3,4,5], page => request({
-      uri: 'https://api.github.com/user/repos',
-      qs: {
-        per_page: 100,
-        sort: 'pushed',
-        access_token: ca.token,
-        type: 'all',
-        page
-      },
-      headers: {
-        'User-Agent': 'OpenCollective',
-        'Accept': 'application/vnd.github.mercy-preview+json' // needed to fetch 'topics', which we can use as tags
-      },
-      json: true
-    }))
-    .then(data => [].concat(...data))
-    .filter(repo => repo.permissions && repo.permissions.push && !repo.private)
-  })
-  .then(body => res.json(body))
-  .catch(next);
+export const fetchAllRepositories = async (req, res, next) => {
+  const githubAccount = await getGithubAccount(req);
+  try {
+    let repos = await github.getAllUserPublicRepos(githubAccount.token);
+    if (repos.length !== 0) {
+      repos = repos.filter(repo => {
+        return repo.stargazers_count >= GITHUB_REPO_MIN_STAR && repo.fork === false;
+      });
+    }
+    res.send(repos);
+  } catch (e) {
+    next(e);
+  }
+};
+
+export const getRepo = async (req, res, next) => {
+  const githubAccount = await getGithubAccount(req);
+  try {
+    const repo = await github.getRepo(req.query.name, githubAccount.token);
+    res.send(repo);
+  } catch (e) {
+    next(e);
+  }
+};
+
+export const getOrgMemberships = async (req, res, next) => {
+  const githubAccount = await getGithubAccount(req);
+  try {
+    const memberships = await github.getOrgMemberships(githubAccount.token);
+    res.send(memberships);
+  } catch (e) {
+    console.log(e);
+    next(e);
+  }
 };
 
 function createConnectedAccountForCollective(CollectiveId, service) {
   const attrs = { service };
-  return models.Collective.findById(CollectiveId)
-    .then(collective => attrs.CollectiveId = collective.id)
+  return models.Collective.findByPk(CollectiveId)
+    .then(collective => (attrs.CollectiveId = collective.id))
     .then(() => ConnectedAccount.findOne({ where: attrs }))
     .then(ca => ca || ConnectedAccount.create(attrs));
 }

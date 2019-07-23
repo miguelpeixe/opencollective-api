@@ -5,7 +5,11 @@
 export default {
   ACTIVITY_ALL: 'all',
   CONNECTED_ACCOUNT_CREATED: 'connected_account.created',
+  COLLECTIVE_CREATED_GITHUB: 'collective.created.github',
+  COLLECTIVE_APPLY: 'collective.apply',
+  COLLECTIVE_APPROVED: 'collective.approved',
   COLLECTIVE_CREATED: 'collective.created',
+  COLLECTIVE_COMMENT_CREATED: 'collective.comment.created',
   COLLECTIVE_EXPENSE_CREATED: 'collective.expense.created',
   COLLECTIVE_EXPENSE_DELETED: 'collective.expense.deleted',
   COLLECTIVE_EXPENSE_UPDATED: 'collective.expense.updated',
@@ -17,12 +21,15 @@ export default {
   COLLECTIVE_UPDATE_CREATED: 'collective.update.created',
   COLLECTIVE_UPDATE_PUBLISHED: 'collective.update.published',
   COLLECTIVE_USER_ADDED: 'collective.user.added',
+  ORGANIZATION_COLLECTIVE_CREATED: 'organization.collective.created',
   SUBSCRIPTION_CONFIRMED: 'subscription.confirmed',
   SUBSCRIPTION_CANCELED: 'subscription.canceled',
+  TICKET_CONFIRMED: 'ticket.confirmed',
   USER_CREATED: 'user.created',
   WEBHOOK_STRIPE_RECEIVED: 'webhook.stripe.received',
   WEBHOOK_PAYPAL_RECEIVED: 'webhook.paypal.received',
   COLLECTIVE_MONTHLY: 'collective.monthly',
+  ORDERS_SUSPICIOUS: 'orders.suspicious',
 
   // Not used anymore, leaving for historical reference
   COLLECTIVE_TRANSACTION_PAID: 'collective.transaction.paid', // replaced with COLLECTIVE_EXPENSE_PAID

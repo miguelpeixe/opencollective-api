@@ -1,15 +1,34 @@
-import {expect} from 'chai';
-import { exportToPDF } from '../server/lib/utils';
+import logger from '../server/lib/logger';
+import { expect, assert } from 'chai';
+import { exportToPDF, sanitizeForLogs } from '../server/lib/utils';
 
-describe("utils", () => {
+describe('utils', () => {
+  it('sanitize for logs', () => {
+    const obj = {
+      user: {
+        name: 'Xavier',
+        email: 'xavier@gmail.com',
+      },
+      card: {
+        expYear: 2022,
+        token: 'tok_32112123',
+      },
+    };
 
-  it("exports PDF", function(done) {
+    const res = sanitizeForLogs(obj);
+    expect(res.user.name).to.equal(obj.user.name);
+    expect(res.user.email).to.equal('(email obfuscated)');
+    expect(res.card.token).to.equal('(token obfuscated)');
+    expect(res.card.expYear).to.equal(obj.card.expYear);
+  });
+
+  it('exports PDF', function(done) {
     this.timeout(10000);
 
     const data = {
       host: {
-        name: "WWCode",
-        currency: "USD"
+        name: 'WWCode',
+        currency: 'USD',
       },
       expensesPerPage: [
         [
@@ -19,23 +38,26 @@ describe("utils", () => {
             description: 'Pizza',
             paymentProcessorFeeInHostCurrency: 5,
             collective: {
-              slug: 'testcollective'
+              slug: 'testcollective',
             },
             User: {
-              name: "Xavier",
-              email: "xavier@gmail.com"
-            }
-          }
-        ]
-      ]
-    }
-    exportToPDF("expenses", data).then(buffer => {
-      const expectedSize = (process.env.NODE_ENV === 'circleci') ? 27750 : 26123;
+              name: 'Xavier',
+              email: 'xavier@gmail.com',
+            },
+          },
+        ],
+      ],
+    };
+    exportToPDF('expenses', data).then(buffer => {
+      const expectedSize = process.env.NODE_ENV === 'circleci' ? 27750 : 26123;
       // Size varies for some reason...
-      console.log("PDF length is ", buffer.length, "expected length", expectedSize);
-      expect(buffer.length > 20000).to.be.true;
-      done();
+      logger.info('PDF length is', buffer.length, 'expected length', expectedSize);
+      try {
+        assert.isAtLeast(buffer.length, 18000, 'PDF length should be at least 20000 bytes');
+        done();
+      } catch (error) {
+        done(error);
+      }
     });
-  })
-
+  });
 });

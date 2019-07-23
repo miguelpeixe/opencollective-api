@@ -9,38 +9,51 @@
 import Promise from 'bluebird';
 import _ from 'lodash';
 import debugLib from 'debug';
-const debug = debugLib("notification");
+import { Op } from 'sequelize';
+import channels from '../constants/channels';
+
+const debug = debugLib('notification');
 
 export default function(Sequelize, DataTypes) {
+  const { models } = Sequelize;
 
-  const models = Sequelize.models;
+  const Notification = Sequelize.define(
+    'Notification',
+    {
+      channel: { defaultValue: 'email', type: DataTypes.STRING }, // in the future: Slack, iPhone, Android, etc.
 
-  const Notification = Sequelize.define('Notification', {
+      type: DataTypes.STRING,
 
-    channel: { defaultValue: 'email', type: DataTypes.STRING }, // in the future: Slack, iPhone, Android, etc.
+      active: { defaultValue: true, type: DataTypes.BOOLEAN },
 
-    type: DataTypes.STRING,
+      createdAt: {
+        type: DataTypes.DATE,
+        defaultValue: Sequelize.NOW,
+      },
 
-    active: { defaultValue: true, type: DataTypes.BOOLEAN },
-
-    createdAt: {
-      type: DataTypes.DATE,
-      defaultValue: Sequelize.NOW
+      webhookUrl: {
+        type: DataTypes.STRING,
+        validate: {
+          isUrl: true,
+        },
+      },
     },
+    {
+      indexes: [
+        {
+          fields: ['channel', 'type', 'webhookUrl', 'CollectiveId'],
+          type: 'unique',
+        },
+      ],
+    },
+  );
 
-    webhookUrl: {
-      type: DataTypes.STRING
-    }
-  }, {
-    indexes: [{
-      fields: ['type', 'CollectiveId', 'UserId'],
-      type: 'unique'
-    }],
-
-  });
+  Notification.prototype.getUser = function() {
+    return models.User.findByPk(this.UserId);
+  };
 
   Notification.createMany = (notifications, defaultValues) => {
-    return Promise.map(notifications, u => Notification.create(_.defaults({},u,defaultValues))).catch(console.error);
+    return Promise.map(notifications, u => Notification.create(_.defaults({}, u, defaultValues))).catch(console.error);
   };
 
   /**
@@ -49,63 +62,121 @@ export default function(Sequelize, DataTypes) {
    * We exclude users that have unsubscribed (by looking for rows in the Notifications table that are active: false)
    */
   Notification.getSubscribers = async (collectiveSlug, mailinglist) => {
-
-    const findByAttribute = isNaN(collectiveSlug) ? "findBySlug" : "findById";
+    const findByAttribute = isNaN(collectiveSlug) ? 'findBySlug' : 'findById';
     const collective = await models.Collective[findByAttribute](collectiveSlug);
 
-    const getMembersForEvent = (mailinglist) => models.Collective
-    .findOne({ where: { slug: mailinglist, type: 'EVENT' } })
-    .then(event => {
-      if (event) return event.getMembers();
-    });
+    const getMembersForEvent = mailinglist =>
+      models.Collective.findOne({
+        where: { slug: mailinglist, type: 'EVENT' },
+      }).then(event => {
+        if (!event) throw new Error('mailinglist_not_found');
+        debug('getMembersForEvent', event.slug);
+        return event.getMembers();
+      });
 
-    const excludeUnsubscribed = (members) => {
+    debug('getSubscribers', findByAttribute, collectiveSlug, 'found:', collective.slug, 'mailinglist:', mailinglist);
+    const excludeUnsubscribed = members => {
+      debug('excludeUnsubscribed: need to filter', members && members.length, 'members');
       if (!members || members.length === 0) return [];
 
-      return Notification.getUnsubscribersUserIds(`mailinglist.${mailinglist}`, collective.id)
-        .then(excludeIds => {
-          return members.filter(m => excludeIds.indexOf(m.CreatedByUserId) === -1)
-        });
-      }
+      return Notification.getUnsubscribersUserIds(`mailinglist.${mailinglist}`, collective.id).then(excludeIds => {
+        debug('excluding', excludeIds.length, 'members');
+        return members.filter(m => excludeIds.indexOf(m.CreatedByUserId) === -1);
+      });
+    };
 
     const getMembersForMailingList = () => {
       switch (mailinglist) {
         case 'backers':
-          return collective.getMembers({ where: { role: 'BACKER'}});
+          return collective.getMembers({ where: { role: 'BACKER' } });
         case 'admins':
-          return collective.getMembers({ where: { role: 'ADMIN'}});
+          return collective.getMembers({ where: { role: 'ADMIN' } });
         default:
           return getMembersForEvent(mailinglist);
       }
-    }
+    };
 
     return getMembersForMailingList().then(excludeUnsubscribed);
-  }
+  };
 
   Notification.getSubscribersUsers = async (collectiveSlug, mailinglist) => {
-    const getUsers = (memberships) => {
+    debug('getSubscribersUsers', collectiveSlug, mailinglist);
+    const getUsers = memberships => {
       if (!memberships || memberships.length === 0) return [];
-      return models.User.findAll({ where: { CollectiveId: { $in: memberships.map(m => m.MemberCollectiveId )}}});
-    }
+      return models.User.findAll({
+        where: {
+          CollectiveId: { [Op.in]: memberships.map(m => m.MemberCollectiveId) },
+        },
+      });
+    };
 
     return await Notification.getSubscribers(collectiveSlug, mailinglist).then(getUsers);
-  }
+  };
+
+  Notification.getSubscribersCollectives = async (collectiveSlug, mailinglist) => {
+    debug('getSubscribersCollectives', collectiveSlug, mailinglist);
+    const getCollectives = memberships => {
+      if (!memberships || memberships.length === 0) return [];
+      return models.Collective.findAll({
+        where: {
+          id: { [Op.in]: memberships.map(m => m.MemberCollectiveId) },
+        },
+      });
+    };
+
+    return await Notification.getSubscribers(collectiveSlug, mailinglist).then(getCollectives);
+  };
 
   /**
    * Get an array of all the UserId that have unsubscribed from the `notificationType` notification for (optional) CollectiveId
-   * @param {*} notificationType 
+   * @param {*} notificationType
    * @param {*} CollectiveId (optional)
    */
   Notification.getUnsubscribersUserIds = (notificationType, CollectiveId) => {
-    debug("getUnsubscribersUserIds", notificationType, CollectiveId);
+    debug('getUnsubscribersUserIds', notificationType, CollectiveId);
     return models.Notification.findAll({
       where: {
         CollectiveId,
         type: notificationType,
-        active: false
-      }
+        active: false,
+      },
     }).then(us => us.map(us => us.UserId));
-  }
+  };
+  /**
+   * Check if notification with `notificationType` and `user` is active.
+   * @param {*} notificationType
+   * @param {*} user
+   * @param {*} [collective]
+   */
+  Notification.isActive = (notificationType, user, collective) => {
+    debug('isActive', notificationType, user.id);
+    const where = {
+      type: notificationType,
+      UserId: user.id,
+    };
+
+    if (collective && collective.id) {
+      where.CollectiveId = collective.id;
+    }
+
+    return models.Notification.findOne({ where }).then(notification => {
+      if (notification) {
+        return notification.active;
+      } else {
+        return true;
+      }
+    });
+  };
+
+  /**
+   * Counts registered webhooks for a user, for a collective.
+   * @param {number} UserId
+   * @param {number} CollectiveId
+   * @returns {Promise<number>} count
+   */
+  Notification.countRegisteredWebhooks = (UserId, CollectiveId) => {
+    return models.Notification.count({ where: { UserId, CollectiveId, channel: channels.WEBHOOK } });
+  };
 
   return Notification;
 }
@@ -145,7 +216,7 @@ Types:
       data: collective, user (caller), target (the updated user), collectiveuser (updated values)
       2* Userid: the updated user + the caller
   - collective.user.deleted
-      data: collective, user (caller), target (the deleted user)
+      data: collective, user (caller), target (the  deleted user)
       2* Userid: the deleted user + the caller
 
   - activities.COLLECTIVE_TRANSACTION_CREATED

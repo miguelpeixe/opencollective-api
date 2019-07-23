@@ -1,117 +1,68 @@
-# OpenCollective API
+# Open Collective API
 
 [![Circle CI](https://circleci.com/gh/opencollective/opencollective-api/tree/master.svg?style=shield)](https://circleci.com/gh/opencollective/opencollective-api/tree/master)
 [![Slack Status](https://slack.opencollective.org/badge.svg)](https://slack.opencollective.org)
 [![Dependency Status](https://david-dm.org/opencollective/opencollective-api.svg)](https://david-dm.org/opencollective/opencollective-api)
-[![Coverage Status](https://coveralls.io/repos/github/opencollective/opencollective-api/badge.svg)](https://coveralls.io/github/opencollective/opencollective-api)
+[![Coverage Status](https://coveralls.io/repos/github/OpenCollective/opencollective-api/badge.svg)](https://coveralls.io/github/OpenCollective/opencollective-api)
 
-![](http://d.pr/i/Vxm1rw+)
+## Foreword
 
-## How to get started
+If you see a step below that could be improved (or is outdated), please update the instructions. We rarely go through this process ourselves, so your fresh pair of eyes and your recent experience with it, makes you the best candidate to improve them for other users. Thank you!
 
-Note: If you see a step below that could be improved (or is outdated), please update instructions. We rarely go through this process ourselves, so your fresh pair of eyes and your recent experience with it, makes you the best candidate to improve them for other users.
+## Development
 
-### Database
+### Prerequisite
 
-Install Postgres 9.x. Start the database server, if necessary. If you face any issue with this step, see [troubleshooting postgres](docs/postgres.md)
+1. Make sure you have Node.js version >= 10.
 
-### Node and npm
+- We recommend using [nvm](https://github.com/creationix/nvm): `nvm install`.
 
-```
-$> npm install
-```
+2. Make sure you have a PostgreSQL database available
 
-This will create the `opencollective_dvl` database if it doesn't exist yet (in which case it will just attempts to run the latest migration if any).
-This sanitized version of the database includes the data for a very small subset of collectives:
-- /opensource
-- /apex
-- /railsgirlsatl
-- /tipbox
-- /brusselstogether
-- /veganizerbxl
+- Check the version: 11.0, 10.3, 9.6.8, 9.5.12, 9.4.17, 9.3.22 or newer
+- Check that the [PostGIS](https://postgis.net/install/) extension is available
+- More info in our [PostgreSQL Database](docs/postgres.md) documentation
 
-You can test that the API is working by opening:
-http://localhost:3060/status
+3. For [node-gyp](https://github.com/nodejs/node-gyp), make sure you have Python 2 available and configured as the active version.
 
-And you can play with GraphQL by opening:
-http://localhost:3060/graphql
+- You can use [pyenv](https://github.com/pyenv/pyenv) to manage Python versions.
 
-For example, try this query:
+### Install
+
+We recommend cloning the repository in a folder dedicated to `opencollective` projects.
 
 ```
-query {
-  Collective(slug:"apex") {
-      id,
-      slug,
-      name,
-      description,
-      tiers {
-        id,
-        name,
-        description,
-        amount,
-        currency,
-        maxQuantity
-      }
-      members{
-        id
-        role
-        member {
-          id
-          slug
-          name
-        }
-        stats {
-          totalDonations
-        }
-      }
-    }
-}
+git clone git@github.com:opencollective/opencollective-api.git opencollective/api
+cd opencollective/api
+npm install
 ```
 
-## Tests
-
-```
-$> npm test
-```
-
-The tests delete all the `opencollective_test` database's tables and re-create them with the latest models.
-
-All the calls to 3rd party services are stubbed using either `sinon` or `nock`.
-
-If you get an error at the first test, you might have forgotten to run postgres. Use e.g. the following aliases to start/stop postgres:
-```
-export PGDATA='/usr/local/var/postgres'
-alias pgstart='pg_ctl -l $PGDATA/server.log start'
-alias pgstop='pg_ctl stop -m fast'
-```
-
-See [Wiki](https://github.com/OpenCollective/OpenCollective/wiki/Software-testing) for more info about the tests.
-
-## Start server
-
-In development environment: 
+### Start
 
 ```
 npm run dev
 ```
 
-This will watch for file changes and automatically restart the server
+#### Troubleshooting
 
-On production:
+- If you're running into `node-gyp` issues related to Python 3 vs Python 2, you can run: `npm rebuild`
+- If you have issues with PostgreSQL, check our [dedicated documentation](docs/postgres.md)
 
-```
-npm run start
-```
+## Deployment
 
-## Documentation
-WIP. Help welcome!
+**Summary**: This project is currently deployed to staging and production with [Heroku](https://www.heroku.com/). To deploy, you need to be a core member of the Open Collective team.
 
-## Questions
+See: [docs/deployment.md](docs/deployment.md)
 
-If you have any questions, ping us on Slack (https://slack.opencollective.org) or on Twitter ([@opencollect](https://twitter.com/opencollect)).
+## More documentation:
 
-## TODO
+- [PostgreSQL Database](docs/postgres.md)
+- [List of supported environment variables](docs/environment_variables.md)
+- [Developing with Emails](docs/emails.md)
+- [Data Exports](docs/data_exports.md)
 
-- The User model is confusing with the concept of User Collective, we should merge the "User" model with the "ConnectedAccount" model so that we could have multiple emails per User.
-- CreatedByUserId is confusing, it should be "CreatedByCollectiveId"
+## Discussion
+
+If you have any questions, ping us on Slack
+(https://slack.opencollective.org) or on Twitter
+([@opencollect](https://twitter.com/opencollect)).

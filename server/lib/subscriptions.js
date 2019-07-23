@@ -1,3 +1,5 @@
+/** @module lib/subscriptions */
+
 import config from 'config';
 import moment from 'moment';
 import { Op } from 'sequelize';
@@ -5,6 +7,8 @@ import { Op } from 'sequelize';
 import models from '../models';
 import emailLib from './email';
 import * as paymentsLib from './payments';
+import { getRecommendedCollectives } from './data';
+import status from '../constants/order_status';
 
 /** Maximum number of attempts before an order gets cancelled. */
 export const MAX_RETRIES = 3;
@@ -18,23 +22,29 @@ export async function ordersWithPendingCharges() {
   return models.Order.findAll({
     where: {
       SubscriptionId: { [Op.ne]: null },
-      deletedAt: null
+      deletedAt: null,
     },
     include: [
-      { model: models.User, as: 'createdByUser'},
-      { model: models.Collective, as: 'collective'},
-      { model: models.Collective, as: 'fromCollective'},
-      { model: models.PaymentMethod, as: 'paymentMethod'},
-      { model: models.Subscription,
+      { model: models.User, as: 'createdByUser' },
+      { model: models.Collective, as: 'collective' },
+      { model: models.Collective, as: 'fromCollective' },
+      { model: models.PaymentMethod, as: 'paymentMethod' },
+      {
+        model: models.Subscription,
         where: {
           isActive: true,
           deletedAt: null,
           deactivatedAt: null,
-          activatedAt: { [Op.lte]: new Date },
-          nextChargeDate: { [Op.lte]: new Date }
-        }
-      }]
+          activatedAt: { [Op.lte]: new Date() },
+          nextChargeDate: { [Op.lte]: new Date() },
+        },
+      },
+    ],
   });
+}
+
+function hasReachedQuantity(order) {
+  return order.Subscription.chargeNumber !== null && order.Subscription.chargeNumber === order.Subscription.quantity;
 }
 
 /** Process order and trigger result handlers.
@@ -56,31 +66,57 @@ export async function processOrderWithSubscription(options, order) {
     chargeDateBefore: dateFormat(order.Subscription.nextCharge),
     chargeDateAfter: null,
     nextPeriodStartBefore: dateFormat(order.Subscription.nextPeriodStart),
-    nextPeriodStartAfter: null
+    nextPeriodStartAfter: null,
   };
 
-  let status = 'unattempted', transaction;
+  let orderProcessedStatus = 'unattempted',
+    collectiveIsArchived = false,
+    transaction;
   if (!options.dryRun) {
-    try {
-      transaction = await paymentsLib.processOrder(order);
-      status = 'success';
-    } catch (error) {
-      status = 'failure';
-      csvEntry.error = error.message;
+    if (hasReachedQuantity(order)) {
+      orderProcessedStatus = 'failure';
+      csvEntry.error = 'Your subscription is over';
+      cancelSubscription(order);
+    } else if (order.collective.deactivatedAt) {
+      // This means the collective has been archived and the subscription should be cancelled.
+      orderProcessedStatus = 'failure';
+      csvEntry.error = 'The collective has been archived';
+      collectiveIsArchived = true;
+      cancelSubscription(order);
+    } else {
+      try {
+        transaction = await paymentsLib.processOrder(order);
+        orderProcessedStatus = 'success';
+      } catch (error) {
+        orderProcessedStatus = 'failure';
+        csvEntry.error = error.message;
+      }
+      order.Subscription = Object.assign(
+        order.Subscription,
+        getNextChargeAndPeriodStartDates(orderProcessedStatus, order),
+      );
+      order.Subscription.chargeRetryCount = getChargeRetryCount(orderProcessedStatus, order);
+      if (orderProcessedStatus === 'success' && order.Subscription.chargeNumber !== null) {
+        order.Subscription.chargeNumber += 1;
+        order.status = status.ACTIVE;
+      }
     }
   }
 
-  order.Subscription = Object.assign(order.Subscription, getNextChargeAndPeriodStartDates(status, order));
-  order.Subscription.chargeRetryCount = getChargeRetryCount(status, order);
-
-  csvEntry.status = status;
+  csvEntry.status = orderProcessedStatus;
   csvEntry.retriesAfter = order.Subscription.chargeRetryCount;
   csvEntry.chargeDateAfter = dateFormat(order.Subscription.nextChargeDate);
   csvEntry.nextPeriodStartAfter = dateFormat(order.Subscription.nextPeriodStart);
 
   if (!options.dryRun) {
-    await handleRetryStatus(order, transaction);
-    await order.Subscription.save();
+    try {
+      await handleRetryStatus(order, transaction, collectiveIsArchived);
+    } catch (error) {
+      console.log(`Error notifying order #${order.id} ${error}`);
+    } finally {
+      await order.Subscription.save();
+      await order.save();
+    }
   }
 
   return csvEntry;
@@ -107,11 +143,22 @@ function dateFormat(date) {
  *   3. WARN_USER: The last attempt failed. Warn user about the
  *      failure and allow them to update the payment method.
  */
-export async function handleRetryStatus(order, transaction) {
+export async function handleRetryStatus(order, transaction, collectiveIsArchived) {
+  if (collectiveIsArchived) {
+    await notifyUserForArchivedCollective(order);
+    return;
+  }
+
   switch (order.Subscription.chargeRetryCount) {
-  case 0: await sendThankYouEmail(order, transaction); break;
-  case MAX_RETRIES: cancelSubscriptionAndNotifyUser(order); break;
-  default: sendFailedEmail(order, false); break;
+    case 0:
+      await sendThankYouEmail(order, transaction);
+      break;
+    case MAX_RETRIES:
+      await cancelSubscriptionAndNotifyUser(order);
+      break;
+    default:
+      await sendFailedEmail(order, false);
+      break;
   }
 }
 
@@ -142,9 +189,10 @@ export function getNextChargeAndPeriodStartDates(status, order) {
     }
     response.nextPeriodStart = nextChargeDate.toDate();
   } else if (status === 'failure') {
-    nextChargeDate = moment(new Date).add(2, 'days');
-  } else if (status === 'updated') { // used when user updates payment method
-    nextChargeDate = moment(new Date); // sets next charge date to now
+    nextChargeDate = moment(new Date()).add(2, 'days');
+  } else if (status === 'updated') {
+    // used when user updates payment method
+    nextChargeDate = moment(new Date()); // sets next charge date to now
   }
   response.nextChargeDate = nextChargeDate.toDate();
   return response;
@@ -157,8 +205,7 @@ export function getNextChargeAndPeriodStartDates(status, order) {
  * 'success'.
  */
 export function getChargeRetryCount(status, order) {
-  return (status === 'success' || status === 'updated')
-    ? 0 : order.Subscription.chargeRetryCount + 1;
+  return status === 'success' || status === 'updated' ? 0 : order.Subscription.chargeRetryCount + 1;
 }
 
 /** Cancel subscription
@@ -172,7 +219,8 @@ export function getChargeRetryCount(status, order) {
  */
 export function cancelSubscription(order) {
   order.Subscription.isActive = false;
-  order.Subscription.deactivatedAt = new Date;
+  order.Subscription.deactivatedAt = new Date();
+  order.status = status.CANCELLED;
 }
 
 /** Group processed orders by their state
@@ -196,8 +244,7 @@ export function cancelSubscription(order) {
  */
 export function groupProcessedOrders(orders) {
   return orders.reduce((map, value) => {
-    const key = value.status === 'success' ? 'charged' :
-          (value.retriesAfter >= MAX_RETRIES) ? 'canceled' : 'past_due';
+    const key = value.status === 'success' ? 'charged' : value.retriesAfter >= MAX_RETRIES ? 'canceled' : 'past_due';
     const group = map.get(key);
     if (group) {
       group.total += value.amount;
@@ -205,49 +252,79 @@ export function groupProcessedOrders(orders) {
     } else {
       map.set(key, {
         total: value.amount,
-        entries: [value]
+        entries: [value],
       });
     }
     return map;
-  }, new Map);
+  }, new Map());
 }
 
 /** Call cancelation function and then send confirmation email */
 export async function cancelSubscriptionAndNotifyUser(order) {
   cancelSubscription(order);
-  await sendFailedEmail(order, true);
+  return sendFailedEmail(order, true);
+}
+
+/** Send `archived.collective` email */
+export async function notifyUserForArchivedCollective(order) {
+  const user = order.createdByUser;
+  return emailLib.send(
+    'archived.collective',
+    user.email,
+    {
+      order: order.info,
+      collective: order.collective.info,
+      fromCollective: order.fromCollective.minimal,
+      subscriptionsLink: user.generateLoginLink(`/${order.fromCollective.slug}/subscriptions`),
+    },
+    {
+      from: `${order.collective.name} <hello@${order.collective.slug}.opencollective.com>`,
+    },
+  );
 }
 
 /** Send `payment.failed` email */
 export async function sendFailedEmail(order, lastAttempt) {
   const user = order.createdByUser;
-  await emailLib.send('payment.failed', user.email, {
-    lastAttempt,
-    order: order.info,
-    collective: order.collective.info,
-    fromCollective: order.fromCollective.minimal,
-    subscriptionsLink: user.generateLoginLink(`/${order.fromCollective.slug}/subscriptions`)
-  }, {
-    from: `${order.collective.name} <hello@${order.collective.slug}.opencollective.com>`
-  });
+  return emailLib.send(
+    'payment.failed',
+    user.email,
+    {
+      lastAttempt,
+      order: order.info,
+      collective: order.collective.info,
+      fromCollective: order.fromCollective.minimal,
+      subscriptionsLink: `${config.host.website}/${order.fromCollective.slug}/subscriptions`,
+    },
+    {
+      from: `${order.collective.name} <hello@${order.collective.slug}.opencollective.com>`,
+    },
+  );
 }
 
 /** Send `thankyou` email */
 export async function sendThankYouEmail(order, transaction) {
-  const relatedCollectives = await order.collective.getRelatedCollectives(2, 0);
+  const relatedCollectives = await order.collective.getRelatedCollectives(3, 0);
+  const recommendedCollectives = await getRecommendedCollectives(order.collective, 3);
   const user = order.createdByUser;
-  await emailLib.send('thankyou', user.email, {
-    order: order.info,
-    transaction: transaction.info,
-    user: user.info,
-    firstPayment: false,
-    collective: order.collective.info,
-    fromCollective: order.fromCollective.minimal,
-    relatedCollectives,
-    config: { host: config.host },
-    interval: order.Subscription.interval,
-    subscriptionsLink: user.generateLoginLink(`/${order.fromCollective.slug}/subscriptions`)
-  }, {
-    from: `${order.collective.name} <hello@${order.collective.slug}.opencollective.com>`
-  });
+  return emailLib.send(
+    'thankyou',
+    user.email,
+    {
+      order: order.info,
+      transaction: transaction.info,
+      user: user.info,
+      firstPayment: false,
+      collective: order.collective.info,
+      fromCollective: order.fromCollective.minimal,
+      relatedCollectives,
+      recommendedCollectives,
+      config: { host: config.host },
+      interval: order.Subscription.interval,
+      subscriptionsLink: `${config.host.website}/${order.fromCollective.slug}/subscriptions`,
+    },
+    {
+      from: `${order.collective.name} <hello@${order.collective.slug}.opencollective.com>`,
+    },
+  );
 }

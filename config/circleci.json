@@ -1,25 +1,34 @@
 {
   "database": {
-    "database": "circle_test",
-    "username": "ubuntu"
+    "url": "postgres://opencollective@localhost:5432/opencollective_dvl",
+    "options": {
+      "logging": false,
+      "benchmark": true
+    }
+  },
+  "maintenancedb": {
+    "url": "postgres://postgres@localhost:5432/postgres"
   },
   "keys": {
     "opencollective": {
-      "api_key": "circleci-1510egmf4a23d80342403fb599qd",
-      "secret": "circleci-a6ad8e62b53b18b4c30295f45d849c1",
-      "session_secret": "circleci-i&j@/V6Wx.`g>Aq?qQQF(>u)/Erm;3A="
+      "apiKey": "circleci-1510egmf4a23d80342403fb599qd"
     }
   },
-  "stripe": {
-    "secret": "sk_test_3",
-    "clientId": "abc",
-    "key": "pk_test_5"
-  },
-  "aws": {
-    "s3": {
-      "bucket": "opencollective-test",
-      "secret": "unknown",
-      "key": "unknown"
+  "limits": {
+    "virtualCards": {
+      "maxPerDay": 1000,
+      "maxAmountPerDay": 5000000
     }
+  },
+  "memcache": {
+    "servers": "localhost:11211",
+    "username": "",
+    "password": ""
+  },
+  "redis": {
+    "serverUrl": "redis://localhost"
+  },
+  "log": {
+    "level": "warn"
   }
 }

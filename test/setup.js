@@ -1,11 +1,19 @@
-import dotEnv from 'dotenv';
+import chai from 'chai';
+import chaiJestSnapshot from 'chai-jest-snapshot';
+import chaiAsPromised from 'chai-as-promised';
 
+// setting up NODE_ENV to test when running the tests.
 if (!process.env.NODE_ENV) {
-  process.env.NODE_ENV = 'development';
+  process.env.NODE_ENV = 'test';
 }
-if (process.env.NODE_ENV === "development") {
-  console.log("Setting PG_DATABASE=opencollective_test");
-  process.env.PG_DATABASE = "opencollective_test";
 
-  dotEnv.load();
-}
+chai.use(chaiAsPromised);
+chai.use(chaiJestSnapshot);
+
+before(() => {
+  chaiJestSnapshot.resetSnapshotRegistry();
+});
+
+beforeEach(function() {
+  chaiJestSnapshot.configureUsingMochaContext(this);
+});

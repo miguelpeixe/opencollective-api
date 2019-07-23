@@ -1,5 +1,5 @@
 import config from 'config';
-import uuid from 'node-uuid';
+import uuidv1 from 'uuid/v1';
 import errors from './errors';
 import paypalAdaptive from '../paymentProviders/paypal/adaptiveGateway';
 
@@ -7,7 +7,7 @@ const services = {
   paypal: (collective, expense, email, preapprovalKey) => {
     const uri = `/collectives/${collective.id}/expenses/${expense.id}/paykey/`;
     const baseUrl = config.host.webapp + uri;
-    const amount = expense.amount/100;
+    const amount = expense.amount / 100;
     let createPaymentResponse;
     const payload = {
       // Note: if we change this to 'PAY', payment will complete in one step
@@ -18,7 +18,7 @@ const services = {
       currencyCode: expense.currency,
       feesPayer: 'SENDER',
       memo: `Reimbursement from ${collective.name}: ${expense.description}`,
-      trackingId: [uuid.v1().substr(0, 8), expense.id].join(':'),
+      trackingId: [uuidv1().substr(0, 8), expense.id].join(':'),
       preapprovalKey,
       returnUrl: `${baseUrl}/success`,
       cancelUrl: `${baseUrl}/cancel`,
@@ -27,19 +27,20 @@ const services = {
           {
             email,
             amount,
-            paymentType: 'SERVICE'
-          }
-        ]
-      }
+            paymentType: 'SERVICE',
+          },
+        ],
+      },
     };
 
-    return paypalAdaptive.pay(payload)
-    .tap(payResponse => createPaymentResponse = payResponse)
-    .then(payResponse => paypalAdaptive.executePayment(payResponse.payKey))
-    .then(executePaymentResponse => {
-      return { createPaymentResponse, executePaymentResponse}
-    });
-  }
+    return paypalAdaptive
+      .pay(payload)
+      .tap(payResponse => (createPaymentResponse = payResponse))
+      .then(payResponse => paypalAdaptive.executePayment(payResponse.payKey))
+      .then(executePaymentResponse => {
+        return { createPaymentResponse, executePaymentResponse };
+      });
+  },
 };
 
 export default service => {
